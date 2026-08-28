@@ -33,11 +33,11 @@ export class PaymentService {
     }
 
     if (simulateGatewayTimeout) {
-      // Regressed timeout handling: returning generic 500 instead of graceful 504 Gateway Timeout
+      // Graceful timeout handling (HTTP 504 Gateway Timeout)
       return {
         success: false,
-        statusCode: 500,
-        errorMessage: 'Internal Server Error: Downstream payment provider timeout.',
+        statusCode: 504,
+        errorMessage: 'Payment gateway timed out. Please retry or choose another payment method.',
       };
     }
 
