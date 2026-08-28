@@ -1,0 +1,64 @@
+name: SentinelFlow AI Quality & Security Pipeline
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  quality-gate:
+    name: Deterministic Quality & AI Review
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Project Dependencies
+        run: npm ci
+
+      - name: TypeScript Static Type Checking
+        run: npm run typecheck
+
+      - name: Run Test Suite & Generate Report
+        id: test_run
+        continue-on-error: true
+        run: |
+          npx vitest run --reporter=json --outputFile=test-results.json || true
+
+      - name: Security & Dependency Audit
+        id: security_audit
+        continue-on-error: true
+        run: |
+          npm audit --json > audit-results.json || true
+
+      - name: Execute SentinelFlow AI Orchestrator
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_COMMIT_SHA: ${{ github.sha }}
+          GITHUB_PR_TITLE: ${{ github.event.pull_request.title }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          LINEAR_TEAM_KEY: ${{ secrets.LINEAR_TEAM_KEY || 'ENG' }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SENTINELFLOW_AUTO_TICKET_THRESHOLD: "0.90"
+        run: |
+          npx tsx src/cli.ts

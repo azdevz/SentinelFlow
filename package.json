@@ -1,0 +1,45 @@
+{
+  "name": "sentinelflow-ai",
+  "version": "1.0.0",
+  "description": "AI-assisted code quality, automated testing, security scanning, Linear issue triage, and Slack intelligence pipeline.",
+  "main": "dist/cli.js",
+  "bin": {
+    "sentinelflow": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "tsx src/cli.ts",
+    "simulate:pass": "tsx src/cli.ts --simulate=pass",
+    "simulate:fail": "tsx src/cli.ts --simulate=fail",
+    "simulate:security": "tsx src/cli.ts --simulate=security"
+  },
+  "keywords": [
+    "ci-cd",
+    "github-actions",
+    "ai-code-review",
+    "linear",
+    "slack",
+    "security-scanning",
+    "quality-engineering"
+  ],
+  "author": "SentinelFlow Engineering",
+  "license": "MIT",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.0",
+    "@linear/sdk": "^39.0.0",
+    "@octokit/rest": "^21.1.1",
+    "@slack/webhook": "^7.0.4",
+    "dotenv": "^16.4.7",
+    "openai": "^4.86.1",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.7"
+  }
+}
