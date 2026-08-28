@@ -1,21 +1,20 @@
 /**
  * SentinelFlow AI — Deduplication & Triage Engine
- * Prevents Linear issue spam by matching incoming failures against existing active tickets.
+ * Prevents Linear issue spam by matching incoming failures against existing active tickets
+ * using deterministic fingerprints, full-text description scanning, and keyword similarity.
  */
 
 import {
   PipelineEvidence,
   FailureAnalysisResult,
-  ReviewResult,
   SecurityScanResult,
   TriageDecision,
   LinearIssuePayload,
-  Severity,
 } from '../types/index.js';
 
 export interface LinearExistingIssueSummary {
   id: string;
-  identifier: string; // e.g. ENG-123
+  identifier: string; // e.g. AK-7
   title: string;
   description?: string;
   url: string;
@@ -30,13 +29,13 @@ export class TriageEngine {
   }
 
   /**
-   * Decide triage action for CI test failure or security finding.
+   * Decide triage action for CI test failure.
    */
   public evaluateFailure(
     evidence: PipelineEvidence,
     analysis: FailureAnalysisResult,
     existingIssues: LinearExistingIssueSummary[] = [],
-    teamKey: string = 'ENG'
+    teamKey: string = 'AK'
   ): TriageDecision {
     // Check if confidence meets threshold
     if (analysis.confidence < this.autoTicketThreshold) {
@@ -44,15 +43,25 @@ export class TriageEngine {
         action: 'no_action',
         isDuplicate: false,
         confidence: analysis.confidence,
-        rationale: `AI confidence (${(analysis.confidence * 100).toFixed(0)}%) is below auto-ticket threshold (${(this.autoTicketThreshold * 100).toFixed(0)}%). Finding flagged for manual PR review only.`,
+        rationale: `AI confidence (${(analysis.confidence * 100).toFixed(0)}%) is below auto-ticket threshold (${(this.autoTicketThreshold * 100).toFixed(0)}%). Finding flagged for PR review without creating Linear ticket.`,
       };
     }
 
-    const testName = analysis.failingTest || evidence.testResults?.failures?.[0]?.testName || 'Test Suite';
-    const issueTitle = `[AI] ${analysis.rootCauseSummary.slice(0, 80)}`;
+    const firstFail = evidence.testResults?.failures?.[0];
+    const testName = analysis.failingTest || firstFail?.testName || 'Test Suite';
+    const filePath = firstFail?.filePath || evidence.changedFiles[0] || 'src/app';
+
+    // Generate unique deterministic fingerprint
+    const fingerprint = this.generateFingerprint(testName, filePath);
 
     // Search for duplicate issues
-    const match = this.findDuplicateIssue(testName, analysis.rootCauseSummary, existingIssues);
+    const match = this.findDuplicateIssue(
+      fingerprint,
+      testName,
+      filePath,
+      analysis.rootCauseSummary,
+      existingIssues
+    );
 
     if (match) {
       return {
@@ -61,13 +70,14 @@ export class TriageEngine {
         existingIssueUrl: match.url,
         isDuplicate: true,
         confidence: analysis.confidence,
-        rationale: `Matching active defect found in Linear (${match.identifier}: "${match.title}"). Adding CI run evidence as comment.`,
+        rationale: `Existing active defect found in Linear (${match.identifier}: "${match.title}"). Updating existing ticket instead of creating duplicate.`,
       };
     }
 
+    const issueTitle = `[AI Bug] ${analysis.rootCauseSummary.slice(0, 75)}`;
     const payload: LinearIssuePayload = {
       title: issueTitle,
-      description: this.formatFailureIssueDescription(evidence, analysis),
+      description: this.formatFailureIssueDescription(evidence, analysis, fingerprint),
       teamKey,
       priority: analysis.classification === 'REAL_BUG' || analysis.isRegression ? 1 : 2, // 1 = Urgent, 2 = High
       labels: ['ai-detected', 'bug', 'regression', 'ci-failure'],
@@ -82,7 +92,7 @@ export class TriageEngine {
       action: 'create_issue',
       isDuplicate: false,
       confidence: analysis.confidence,
-      rationale: `High-confidence defect detected (${(analysis.confidence * 100).toFixed(0)}%). No duplicate Linear issue found.`,
+      rationale: `New high-confidence defect detected (${(analysis.confidence * 100).toFixed(0)}%). No duplicate Linear issue found.`,
       issuePayload: payload,
     };
   }
@@ -94,7 +104,7 @@ export class TriageEngine {
     evidence: PipelineEvidence,
     security: SecurityScanResult,
     existingIssues: LinearExistingIssueSummary[] = [],
-    teamKey: string = 'ENG'
+    teamKey: string = 'AK'
   ): TriageDecision | null {
     if (security.passed) {
       return null;
@@ -106,14 +116,14 @@ export class TriageEngine {
     const firstSecret = secretLeaks[0];
     const firstCve = cves[0];
 
-    const title = firstSecret
-      ? `[SECURITY] Hardcoded ${firstSecret.ruleName} credential detected in ${firstSecret.file}`
-      : `[SECURITY] High/Critical Vulnerability: ${firstCve?.packageName || 'Dependency CVE'}`;
+    const ruleOrPkg = firstSecret ? firstSecret.ruleName : firstCve?.packageName || 'Dependency_CVE';
+    const fingerprint = `sec-${ruleOrPkg.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
 
-    // Search for duplicate
-    const match = existingIssues.find((issue) =>
-      issue.title.toLowerCase().includes(firstSecret ? firstSecret.ruleName.toLowerCase() : firstCve?.packageName.toLowerCase() || '')
-    );
+    // Search for duplicate security issue
+    const match = existingIssues.find((issue) => {
+      const fullText = `${issue.title} ${issue.description || ''}`.toLowerCase();
+      return fullText.includes(fingerprint) || fullText.includes(ruleOrPkg.toLowerCase());
+    });
 
     if (match) {
       return {
@@ -122,11 +132,15 @@ export class TriageEngine {
         existingIssueUrl: match.url,
         isDuplicate: true,
         confidence: 1.0,
-        rationale: `Duplicate security finding already tracked in Linear (${match.identifier}).`,
+        rationale: `Duplicate security issue already tracked in Linear (${match.identifier}).`,
       };
     }
 
-    const description = this.formatSecurityIssueDescription(evidence, security);
+    const title = firstSecret
+      ? `[SECURITY] Hardcoded ${firstSecret.ruleName} credential detected in ${firstSecret.file}`
+      : `[SECURITY] High/Critical Vulnerability: ${firstCve?.packageName || 'Dependency CVE'}`;
+
+    const description = this.formatSecurityIssueDescription(evidence, security, fingerprint);
 
     return {
       action: 'create_issue',
@@ -150,33 +164,86 @@ export class TriageEngine {
     };
   }
 
-  private findDuplicateIssue(
+  /**
+   * Multi-strategy duplicate search.
+   */
+  public findDuplicateIssue(
+    fingerprint: string,
     testName: string,
+    filePath: string,
     rootCause: string,
     existingIssues: LinearExistingIssueSummary[]
   ): LinearExistingIssueSummary | undefined {
-    const cleanTest = testName.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const cleanRoot = rootCause.toLowerCase().slice(0, 40);
+    const cleanTestWords = this.tokenize(testName);
+    const cleanRootWords = this.tokenize(rootCause);
 
-    return existingIssues.find((issue) => {
-      const titleLower = issue.title.toLowerCase();
-      if (cleanTest && titleLower.includes(cleanTest.slice(0, 15))) {
-        return true;
+    for (const issue of existingIssues) {
+      const fullText = `${issue.title} ${issue.description || ''}`.toLowerCase();
+
+      // Strategy 1: Exact Fingerprint Match
+      if (fullText.includes(fingerprint.toLowerCase())) {
+        return issue;
       }
-      if (cleanRoot && titleLower.includes(cleanRoot)) {
-        return true;
+
+      // Strategy 2: Test Name Exact Substring Match
+      if (testName.length > 8 && fullText.includes(testName.toLowerCase())) {
+        return issue;
       }
-      return false;
-    });
+
+      // Strategy 3: Significant Keyword Overlap (Jaccard token similarity)
+      const issueWords = this.tokenize(fullText);
+      const testOverlap = this.calculateOverlap(cleanTestWords, issueWords);
+      const rootOverlap = this.calculateOverlap(cleanRootWords, issueWords);
+
+      if (testOverlap >= 0.6 || rootOverlap >= 0.55) {
+        return issue;
+      }
+    }
+
+    return undefined;
+  }
+
+  public generateFingerprint(testName: string, filePath: string): string {
+    const cleanTest = testName.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 40);
+    const cleanFile = filePath.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(-25);
+    return `fp_${cleanFile}_${cleanTest}`;
+  }
+
+  private tokenize(text: string): Set<string> {
+    const stopWords = new Set([
+      'the', 'is', 'at', 'which', 'on', 'a', 'an', 'and', 'or', 'in', 'to', 'for', 'with', 'by',
+      'test', 'suite', 'failing', 'failed', 'error', 'expected', 'actual', 'ai', 'bug', 'caused'
+    ]);
+
+    const words = text
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length > 2 && !stopWords.has(w));
+
+    return new Set(words);
+  }
+
+  private calculateOverlap(queryTokens: Set<string>, targetTokens: Set<string>): number {
+    if (queryTokens.size === 0) return 0;
+    let matchCount = 0;
+    for (const token of queryTokens) {
+      if (targetTokens.has(token)) {
+        matchCount++;
+      }
+    }
+    return matchCount / queryTokens.size;
   }
 
   private formatFailureIssueDescription(
     evidence: PipelineEvidence,
-    analysis: FailureAnalysisResult
+    analysis: FailureAnalysisResult,
+    fingerprint: string
   ): string {
     const firstFail = evidence.testResults?.failures?.[0];
 
-    return `## Summary
+    return `<!-- sentinelflow-fingerprint: ${fingerprint} -->
+## Summary
 ${analysis.rootCauseSummary}
 
 ## Detection
@@ -207,9 +274,11 @@ ${analysis.suggestedFix || 'Inspect the error stack trace and handle edge-cases.
 
   private formatSecurityIssueDescription(
     evidence: PipelineEvidence,
-    security: SecurityScanResult
+    security: SecurityScanResult,
+    fingerprint: string
   ): string {
-    return `## 🚨 Critical Security Alert
+    return `<!-- sentinelflow-fingerprint: ${fingerprint} -->
+## 🚨 Critical Security Alert
 SentinelFlow AI detected a security violation in this pull request.
 
 ## GitHub Context
@@ -222,17 +291,6 @@ ${
     ? security.secretLeaks
         .map(
           (s) => `- **Rule:** \`${s.ruleName}\`\n  - **File:** \`${s.file}:${s.line || 'N/A'}\`\n  - **Masked Token:** \`${s.maskedSecret}\``
-        )
-        .join('\n')
-    : 'None'
-}
-
-## Dependency Vulnerabilities
-${
-  security.vulnerabilities.length > 0
-    ? security.vulnerabilities
-        .map(
-          (v) => `- **Package:** \`${v.packageName}\` (${v.severity.toUpperCase()})\n  - **Title:** ${v.title}\n  - **Patched:** \`${v.patchedVersions || 'Available'}\``
         )
         .join('\n')
     : 'None'

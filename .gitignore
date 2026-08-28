@@ -13,11 +13,13 @@ coverage/
 .env.local
 .env.production
 
-# Logs
+# Logs & CI Artifacts
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 *.log
+test-results.json
+audit-results.json
 
 # OS files
 .DS_Store

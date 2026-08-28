@@ -55,7 +55,8 @@ jobs:
           GITHUB_BASE_REF: ${{ github.base_ref }}
           GITHUB_HEAD_REF: ${{ github.head_ref }}
           LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
-          LINEAR_TEAM_KEY: ${{ secrets.LINEAR_TEAM_KEY || 'ENG' }}
+          LINEAR_TEAM_KEY: ${{ secrets.LINEAR_TEAM_KEY || 'AK' }}
+          LINEAR_PROJECT_NAME: ${{ secrets.LINEAR_PROJECT_NAME || 'SentinelFlow' }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

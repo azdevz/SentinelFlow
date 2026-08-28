@@ -31,8 +31,9 @@ describe('TriageEngine', () => {
       failures: [
         {
           suite: 'test/payment.test.ts',
-          testName: 'PaymentService > handles timeout',
+          testName: 'PaymentService > handles gateway timeout gracefully',
           errorMessage: 'Expected 504 got 500',
+          filePath: 'src/payment.ts',
         },
       ],
     },
@@ -42,34 +43,53 @@ describe('TriageEngine', () => {
     classification: 'REAL_BUG',
     confidence: 0.95,
     reason: 'Payment timeout exception not handled in service layer.',
-    rootCauseSummary: 'Checkout API returns 500 on payment timeout',
+    rootCauseSummary: 'Removal of retry handler caused gateway timeout handling to fail',
     isRegression: true,
     suggestedFix: 'Wrap gateway call with timeout error handler',
-    failingTest: 'PaymentService > handles timeout',
+    failingTest: 'PaymentService > handles gateway timeout gracefully',
   };
 
   it('creates new Linear ticket when no duplicate exists and confidence >= 0.9', () => {
-    const decision = triage.evaluateFailure(mockEvidence, highConfidenceFailure, [], 'ENG');
+    const decision = triage.evaluateFailure(mockEvidence, highConfidenceFailure, [], 'AK');
     expect(decision.action).toBe('create_issue');
     expect(decision.isDuplicate).toBe(false);
-    expect(decision.issuePayload?.title).toContain('Checkout API returns 500 on payment timeout');
+    expect(decision.issuePayload?.title).toContain('Removal of retry handler');
     expect(decision.issuePayload?.priority).toBe(1); // Urgent
   });
 
-  it('detects existing Linear ticket and updates instead of creating duplicate', () => {
+  it('detects duplicate via embedded fingerprint', () => {
+    const fingerprint = triage.generateFingerprint('PaymentService > handles gateway timeout gracefully', 'src/payment.ts');
     const existingIssues = [
       {
         id: 'issue-1',
-        identifier: 'ENG-482',
-        title: '[AI] Checkout API returns 500 on payment timeout',
-        url: 'https://linear.app/team/issue/ENG-482',
+        identifier: 'AK-7',
+        title: '[AI Bug] Payment gateway timeout regression',
+        description: `<!-- sentinelflow-fingerprint: ${fingerprint} -->\nEarlier CI run description`,
+        url: 'https://linear.app/ayaz-chishti/issue/AK-7',
       },
     ];
 
-    const decision = triage.evaluateFailure(mockEvidence, highConfidenceFailure, existingIssues, 'ENG');
+    const decision = triage.evaluateFailure(mockEvidence, highConfidenceFailure, existingIssues, 'AK');
     expect(decision.action).toBe('update_issue');
     expect(decision.isDuplicate).toBe(true);
     expect(decision.existingIssueId).toBe('issue-1');
+  });
+
+  it('detects duplicate via keyword overlap similarity even if title wording varies', () => {
+    const existingIssues = [
+      {
+        id: 'issue-2',
+        identifier: 'AK-8',
+        title: '[AI] Gateway timeout handling failed due to retry logic removal',
+        description: 'PaymentService test failure on payment processing timeout',
+        url: 'https://linear.app/ayaz-chishti/issue/AK-8',
+      },
+    ];
+
+    const decision = triage.evaluateFailure(mockEvidence, highConfidenceFailure, existingIssues, 'AK');
+    expect(decision.action).toBe('update_issue');
+    expect(decision.isDuplicate).toBe(true);
+    expect(decision.existingIssueId).toBe('issue-2');
   });
 
   it('does not create Linear ticket if confidence is below threshold', () => {
@@ -78,7 +98,7 @@ describe('TriageEngine', () => {
       confidence: 0.65,
     };
 
-    const decision = triage.evaluateFailure(mockEvidence, lowConfidence, [], 'ENG');
+    const decision = triage.evaluateFailure(mockEvidence, lowConfidence, [], 'AK');
     expect(decision.action).toBe('no_action');
     expect(decision.rationale).toContain('below auto-ticket threshold');
   });
